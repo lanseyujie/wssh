@@ -1,4 +1,4 @@
-module wssh
+module github.com/lanseyujie/wssh
 
 go 1.13
 
