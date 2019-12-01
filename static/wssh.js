@@ -1,5 +1,5 @@
 var term = new window.Terminal(),
-    ws = new WebSocket('ws://127.0.0.1:8080/ssh');
+    ws = new WebSocket('ws://' + location.host + '/ssh');
 
 term.open(document.getElementById('terminal'));
 term.resize(100, 30);
