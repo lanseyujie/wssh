@@ -10,23 +10,61 @@
 package main
 
 import (
+    "flag"
     "github.com/lanseyujie/wssh/wssh"
     "golang.org/x/net/websocket"
     "io/ioutil"
     "log"
     "net/http"
+    "os"
+)
+
+var (
+    user     string
+    host     string
+    port     uint
+    key      string
+    password string
+    help     bool
 )
 
 func main() {
-    // get private key.
-    key, err := ioutil.ReadFile("/root/.ssh/id_rsa")
-    if err != nil {
-        log.Fatalln(err)
-    }
-    shell := wssh.NewWebSocketShell("192.168.1.10", 22, "root", "private_key_password", key)
+    var shell *wssh.WebSocketShell
 
-    // or
-    //shell := wssh.NewWebSocketShell("192.168.1.10", 22, "root", "ssh_password", nil)
+    flag.StringVar(&user, "u", "root", "ssh user")
+    flag.StringVar(&host, "h", "localhost", "ssh host")
+    flag.UintVar(&port, "P", 22, "ssh port")
+    flag.StringVar(&key, "k", "", "private key file path")
+    flag.StringVar(&password, "p", "", "ssh or private key password")
+    flag.BoolVar(&help, "help", false, "this help")
+
+    flag.Parse()
+
+    if help {
+        flag.PrintDefaults()
+        os.Exit(0)
+    }
+
+    log.SetPrefix("[ERROR] ")
+
+    if len(key) > 0 {
+        // get private key.
+        key, err := ioutil.ReadFile(key)
+        if err != nil {
+            log.Fatalln(err)
+        }
+        shell = wssh.NewWebSocketShell(host, int(port), user, password, key)
+    } else {
+        shell = wssh.NewWebSocketShell(host, int(port), user, password, nil)
+    }
+
+    // test config
+    err := shell.Connect()
+    if err != nil {
+        log.Fatalln("ssh config", err)
+    } else {
+        shell.Close()
+    }
 
     http.Handle("/", http.FileServer(http.Dir("./static/")))
 
