@@ -148,23 +148,23 @@ func (wssh *WebSocketShell) Close() {
 func (wssh *WebSocketShell) WebSocket(ws *websocket.Conn) {
     err := wssh.Connect()
     if err != nil {
-        log.Fatalln(err)
+        log.Println("wssh connect: ", err)
     }
 
     err = wssh.Config(80, 30)
     if err != nil {
-        log.Fatalln(err)
+        log.Println("wssh config: ", err)
     }
 
     // set io.Reader and io.Writer from terminal session.
     sshReader, err := wssh.Session.StdoutPipe()
     if err != nil {
-        log.Fatalln(err)
+        log.Println("session stdout pipe: ", err)
     }
 
     sshWriter, err := wssh.Session.StdinPipe()
     if err != nil {
-        log.Fatalln(err)
+        log.Println("session stdin pipe: ", err)
     }
 
     // read from terminal and write to frontend.
@@ -179,14 +179,14 @@ func (wssh *WebSocketShell) WebSocket(ws *websocket.Conn) {
             buf[0] = Terminal
             _, err := sshReader.Read(buf[1:])
             if err != nil {
-                log.Println(err)
+                log.Println("ssh read: ", err)
                 return
             }
 
             // send binary frame.
             err = websocket.Message.Send(ws, buf)
             if err != nil {
-                log.Println(err)
+                log.Println("websocket message send: ", err)
                 return
             }
         }
@@ -204,7 +204,7 @@ func (wssh *WebSocketShell) WebSocket(ws *websocket.Conn) {
             var buf []byte
             err := websocket.Message.Receive(ws, &buf)
             if err != nil {
-                log.Println(err)
+                log.Println("websocket message receive: ", err)
                 return
             }
 
@@ -215,7 +215,7 @@ func (wssh *WebSocketShell) WebSocket(ws *websocket.Conn) {
                 resize := WindowResize{}
                 err = json.Unmarshal(buf[1:], &resize)
                 if err != nil {
-                    log.Println(err)
+                    log.Println("json unmarshal: ", err)
                     return
                 }
 
@@ -225,7 +225,7 @@ func (wssh *WebSocketShell) WebSocket(ws *websocket.Conn) {
                     err = websocket.Message.Send(ws, []byte{2, 'p', 'o', 'n', 'g'})
                 }
             default:
-                log.Println("Unexpected data type")
+                log.Println("unexpected data type")
             }
 
             if err != nil {
@@ -238,11 +238,11 @@ func (wssh *WebSocketShell) WebSocket(ws *websocket.Conn) {
     // start remote shell.
     err = wssh.Session.Shell()
     if err != nil {
-        log.Println("failed to start shell: ", err)
+        log.Println("wssh session shell: ", err)
     }
 
     err = wssh.Session.Wait()
     if err != nil {
-        log.Println("failed to wait shell: ", err)
+        log.Println("wssh session wait: ", err)
     }
 }
