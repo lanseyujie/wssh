@@ -202,7 +202,7 @@ func (wssh *WebSocketShell) WebSocket(ws *websocket.Conn) {
         for {
             // receive binary frame.
             var buf []byte
-            err := websocket.Message.Receive(ws, buf)
+            err := websocket.Message.Receive(ws, &buf)
             if err != nil {
                 log.Println(err)
                 return
