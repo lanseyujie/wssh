@@ -1,8 +1,8 @@
-var term = new window.Terminal(),
+const term = new window.Terminal(),
     ws = new WebSocket('ws://' + location.host + '/ssh');
 
 term.open(document.getElementById('terminal'));
-term.resize(100, 30);
+term.resize(80, 30);
 ws.binaryType = 'arraybuffer';
 
 function init() {
@@ -42,7 +42,7 @@ ws.onopen = function (evt) {
 
     ws.onmessage = function (evt) {
         if (evt.data instanceof ArrayBuffer) {
-            var str = decode(evt.data),
+            const str = decode(evt.data),
                 flag = str.substr(0, 1),
                 msg = str.substr(1);
 
@@ -58,7 +58,7 @@ ws.onopen = function (evt) {
         }
     };
 
-    timer = window.setInterval(function () {
+    let timer = window.setInterval(function () {
         ws.send(encode("\x02" + "ping"));
     }, 1000 * 60 * 9);
 
