@@ -12,7 +12,6 @@ function init() {
 
     term._initialized = true;
 
-    term.writeln('Welcome to WSSH');
     term.writeln('Connecting ...');
 }
 
@@ -26,15 +25,15 @@ function encode(data) {
 
 init();
 
-ws.onopen = function (evt) {
+ws.onopen = function () {
     term.onData(function (data) {
         if (ws.readyState === ws.OPEN) {
-            ws.send(encode("\x00" + data));
+            ws.send(encode("\x02" + data));
         }
     });
 
     term.onResize(function (evt) {
-        ws.send(encode("\x01" + JSON.stringify({
+        ws.send(encode("\x03" + JSON.stringify({
             cols: evt.cols,
             rows: evt.rows
         })));
@@ -43,13 +42,16 @@ ws.onopen = function (evt) {
     ws.onmessage = function (evt) {
         if (evt.data instanceof ArrayBuffer) {
             const str = decode(evt.data),
-                flag = str.substr(0, 1),
-                msg = str.substr(1);
+                flag = str.substring(0, 1),
+                msg = str.substring(1);
 
-            if (flag === "\x00") {
-                term.write(msg);
-            } else if (flag === "\x02") {
-                console.log(msg)
+            switch (flag) {
+                case "\x02":
+                    term.write(msg);
+                    break;
+                case "\x04":
+                    console.log(msg)
+                    break;
             }
         } else {
             // term.writeln('');
@@ -59,10 +61,10 @@ ws.onopen = function (evt) {
     };
 
     let timer = window.setInterval(function () {
-        ws.send(encode("\x02" + "ping"));
+        ws.send(encode("\x04" + "ping"));
     }, 1000 * 60 * 9);
 
-    ws.onclose = function (evt) {
+    ws.onclose = function () {
         window.clearInterval(timer);
         term.writeln('');
         term.writeln("Session terminated!");
@@ -75,3 +77,11 @@ ws.onerror = function (evt) {
         console.log(evt)
     }
 };
+
+let timer = 0;
+window.addEventListener('resize', function () {
+    clearTimeout(timer);
+    timer = setTimeout(function () {
+        term.resize(Math.floor(document.body.clientWidth / 9), Math.floor(document.body.clientHeight / 17));
+    }, 200);
+});

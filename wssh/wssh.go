@@ -1,248 +1,270 @@
-/**
- * WSSH
- *
- * @abstract  WebSocketShell
- * @version   1.0.0
- * @author    Wildlife <admin@lanseyujie.com>
- * @link      https://lanseyujie.com
- */
-
 package wssh
 
 import (
-    "crypto/x509"
-    "encoding/json"
-    "encoding/pem"
-    "errors"
-    "golang.org/x/crypto/ssh"
-    "golang.org/x/net/websocket"
-    "log"
-    "net"
-    "strconv"
-    "time"
-)
+	"encoding/json"
+	"errors"
+	"io"
+	"log"
+	"net"
+	"os"
+	"strconv"
+	"sync"
+	"time"
 
-type WebSocketShell struct {
-    Host     string
-    Port     int
-    Username string
-    Password string
-    Key      []byte
-    Client   *ssh.Client
-    Session  *ssh.Session
-}
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/net/websocket"
+)
 
 // msg flag type.
+
+type MsgType byte
+
 const (
-    Terminal = iota
-    Resize
-    Heartbeat
+	UNKNOWN MsgType = iota
+	CONFIG
+	SESSION
+	RESIZE
+	HEARTBEAT
 )
 
-// terminal window resize.
+const bufferSize = 4096
+
+// WindowResize terminal window resize.
 type WindowResize struct {
-    Cols int `json:"cols"`
-    Rows int `json:"rows"`
+	Cols int `json:"cols"`
+	Rows int `json:"rows"`
 }
 
-func NewWebSocketShell(host string, port int, username, password string, key []byte) *WebSocketShell {
-    return &WebSocketShell{
-        Host:     host,
-        Port:     port,
-        Username: username,
-        Password: password,
-        Key:      key,
-        Client:   nil,
-        Session:  nil,
-    }
+type WebSocketShell struct {
+	opts options
+	pool *sync.Pool
 }
 
-// connect to the ssh.
-func (wssh *WebSocketShell) Connect() error {
-    var err error
-    var auth []ssh.AuthMethod
-    var signer ssh.Signer
+func New(opts ...Option) *WebSocketShell {
+	o := options{
+		user:         "root",
+		host:         "localhost",
+		port:         22,
+		identityFile: "",
+		password:     "",
+		listenPort:   8022,
+	}
 
-    if len(wssh.Key) > 0 {
-        if len(wssh.Password) > 0 {
-            block, rest := pem.Decode(wssh.Key)
-            if len(rest) > 0 {
-                return errors.New("extra data included in key")
-            }
+	for _, opt := range opts {
+		opt(&o)
+	}
 
-            der, err := x509.DecryptPEMBlock(block, []byte(wssh.Password))
-            if err != nil {
-                return err
-            }
-            key, err := x509.ParsePKCS1PrivateKey(der)
-            if err != nil {
-                return err
-            }
-
-            signer, err = ssh.NewSignerFromKey(key)
-        } else {
-            // create the signer for this private key.
-            signer, err = ssh.ParsePrivateKey(wssh.Key)
-        }
-
-        if err != nil {
-            return err
-        }
-
-        auth = []ssh.AuthMethod{
-            // use the public keys method for remote authentication.
-            ssh.PublicKeys(signer),
-        }
-    } else {
-        auth = []ssh.AuthMethod{
-            ssh.Password(wssh.Password),
-        }
-    }
-
-    // get auth method.
-    config := &ssh.ClientConfig{
-        User:    wssh.Username,
-        Auth:    auth,
-        Timeout: 30 * time.Second,
-        HostKeyCallback: func(hostname string, remote net.Addr, key ssh.PublicKey) error {
-            return nil
-        },
-    }
-
-    // connect to ths ssh.
-    wssh.Client, err = ssh.Dial("tcp", wssh.Host+":"+strconv.Itoa(wssh.Port), config)
-    if err != nil {
-        return err
-    }
-
-    // create session.
-    wssh.Session, err = wssh.Client.NewSession()
-
-    return err
+	return &WebSocketShell{
+		opts: o,
+		pool: &sync.Pool{
+			New: func() interface{} {
+				return make([]byte, 0, bufferSize)
+			},
+		},
+	}
 }
 
-// config the terminal modes.
-func (wssh *WebSocketShell) Config(cols, rows int) error {
-    modes := ssh.TerminalModes{
-        ssh.ECHO:          1,     // enable echoing
-        ssh.TTY_OP_ISPEED: 14400, // input speed = 14.4 kbaud
-        ssh.TTY_OP_OSPEED: 14400, // output speed = 14.4 kbaud
-    }
+func (w *WebSocketShell) Open() (*ssh.Client, error) {
+	var auth []ssh.AuthMethod
 
-    // request pseudo terminal.
-    err := wssh.Session.RequestPty("xterm-256color", rows, cols, modes)
+	{
+		if len(w.opts.identityFile) > 0 {
+			priKey, err := os.ReadFile(w.opts.identityFile)
+			if err != nil {
+				return nil, err
+			}
 
-    return err
+			var signer ssh.Signer
+			if len(w.opts.password) > 0 {
+				signer, err = ssh.ParsePrivateKeyWithPassphrase(priKey, []byte(w.opts.password))
+			} else {
+				signer, err = ssh.ParsePrivateKey(priKey)
+			}
+			if err != nil {
+				return nil, err
+			}
+			auth = append(auth, ssh.PublicKeys(signer))
+		} else if len(w.opts.password) > 0 {
+			auth = append(auth, ssh.Password(w.opts.password))
+		}
+	}
+
+	client, err := ssh.Dial("tcp", w.opts.host+":"+strconv.Itoa(w.opts.port), &ssh.ClientConfig{
+		User:            w.opts.user,
+		Auth:            auth,
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		BannerCallback:  ssh.BannerDisplayStderr(),
+		ClientVersion:   "SSH-2.0-WSSH",
+		Timeout:         10 * time.Second,
+	})
+
+	return client, err
 }
 
-func (wssh *WebSocketShell) Close() {
-    if wssh.Session != nil {
-        _ = wssh.Session.Close()
-    }
+// RequestPty .
+func requestPty(sess *ssh.Session, cols, rows int) error {
+	modes := ssh.TerminalModes{
+		ssh.ECHO:          1,     // enable echoing
+		ssh.TTY_OP_ISPEED: 14400, // input speed = 14.4 kbaud
+		ssh.TTY_OP_OSPEED: 14400, // output speed = 14.4 kbaud
+	}
 
-    if wssh.Client != nil {
-        _ = wssh.Client.Close()
-    }
+	// request pseudo terminal.
+	err := sess.RequestPty("xterm-256color", rows, cols, modes)
+
+	return err
 }
 
-func (wssh *WebSocketShell) WebSocket(ws *websocket.Conn) {
-    err := wssh.Connect()
-    if err != nil {
-        log.Println("wssh connect: ", err)
-    }
+func (w *WebSocketShell) Send(ws *websocket.Conn, reader io.Reader) (err error) {
+	buf := w.pool.Get().([]byte)
+	defer func() {
+		buf = buf[:0]
+		w.pool.Put(buf)
+	}()
 
-    err = wssh.Config(80, 30)
-    if err != nil {
-        log.Println("wssh config: ", err)
-    }
+	buf = make([]byte, cap(buf))
+	buf[0] = byte(SESSION)
+	_, err = reader.Read(buf[1:])
+	if err != nil {
+		return
+	}
 
-    // set io.Reader and io.Writer from terminal session.
-    sshReader, err := wssh.Session.StdoutPipe()
-    if err != nil {
-        log.Println("session stdout pipe: ", err)
-    }
+	err = websocket.Message.Send(ws, buf)
 
-    sshWriter, err := wssh.Session.StdinPipe()
-    if err != nil {
-        log.Println("session stdin pipe: ", err)
-    }
+	return
+}
 
-    // read from terminal and write to frontend.
-    go func() {
-        defer func() {
-            _ = ws.Close()
-            wssh.Close()
-        }()
+func (w *WebSocketShell) Receive(ws *websocket.Conn, session *ssh.Session, writer io.WriteCloser) (err error) {
+	buf := w.pool.Get().([]byte)
+	defer func() {
+		buf = buf[:0]
+		w.pool.Put(buf)
+	}()
 
-        for {
-            buf := make([]byte, 4096)
-            buf[0] = Terminal
-            _, err := sshReader.Read(buf[1:])
-            if err != nil {
-                log.Println("ssh read: ", err)
-                return
-            }
+	err = websocket.Message.Receive(ws, &buf)
+	if err != nil {
+		return
+	}
 
-            // send binary frame.
-            err = websocket.Message.Send(ws, buf)
-            if err != nil {
-                log.Println("websocket message send: ", err)
-                return
-            }
-        }
-    }()
+	switch MsgType(buf[0]) {
+	case SESSION:
+		_, err = writer.Write(buf[1:])
+	case RESIZE:
+		resize := WindowResize{}
+		err = json.Unmarshal(buf[1:], &resize)
+		if err != nil {
+			return
+		}
 
-    // read from frontend and write to terminal.
-    go func() {
-        defer func() {
-            _ = ws.Close()
-            wssh.Close()
-        }()
+		err = session.WindowChange(resize.Rows, resize.Cols)
+	case HEARTBEAT:
+		if string(buf[1:]) == "ping" {
+			err = websocket.Message.Send(ws, []byte{2, 'p', 'o', 'n', 'g'})
+		}
+	default:
+		err = errors.New("[ERROR] unexpected msg type")
+	}
 
-        for {
-            // receive binary frame.
-            var buf []byte
-            err := websocket.Message.Receive(ws, &buf)
-            if err != nil {
-                log.Println("websocket message receive: ", err)
-                return
-            }
+	return
+}
 
-            switch buf[0] {
-            case Terminal:
-                _, err = sshWriter.Write(buf[1:])
-            case Resize:
-                resize := WindowResize{}
-                err = json.Unmarshal(buf[1:], &resize)
-                if err != nil {
-                    log.Println("json unmarshal: ", err)
-                    return
-                }
+func (w *WebSocketShell) WebSocket(ws *websocket.Conn) {
+	defer ws.Close()
 
-                err = wssh.Session.WindowChange(resize.Rows, resize.Cols)
-            case Heartbeat:
-                if string(buf[1:]) == "ping" {
-                    err = websocket.Message.Send(ws, []byte{2, 'p', 'o', 'n', 'g'})
-                }
-            default:
-                log.Println("unexpected data type")
-            }
+	var client *ssh.Client
+	var session *ssh.Session
+	{
+		var err error
+		if client, err = w.Open(); err != nil {
+			log.Println("[ERROR] ssh dial err:", err)
+			return
+		}
+		defer client.Close()
 
-            if err != nil {
-                log.Println(err)
-                return
-            }
-        }
-    }()
+		if session, err = client.NewSession(); err != nil {
+			log.Println("[ERROR] new session err:", err)
+			return
+		}
+		defer session.Close()
 
-    // start remote shell.
-    err = wssh.Session.Shell()
-    if err != nil {
-        log.Println("wssh session shell: ", err)
-    }
+		if err = requestPty(session, 80, 30); err != nil {
+			log.Println("[ERROR] request pty err:", err)
+			return
+		}
+	}
 
-    err = wssh.Session.Wait()
-    if err != nil {
-        log.Println("wssh session wait: ", err)
-    }
+	// set io.Reader and io.Writer from terminal session.
+	var reader io.Reader
+	var writer io.WriteCloser
+	{
+		stdout, err := session.StdoutPipe()
+		if err != nil {
+			log.Println("[ERROR] session stdout pipe:", err)
+			return
+		}
+		stderr, err := session.StdoutPipe()
+		if err != nil {
+			log.Println("[ERROR] session stdout pipe:", err)
+			return
+		}
+
+		reader = io.MultiReader(stdout, stderr)
+
+		writer, err = session.StdinPipe()
+		if err != nil {
+			log.Println("[ERROR] session stdin pipe:", err)
+			return
+		}
+		defer writer.Close()
+	}
+
+	ch := make(chan struct{})
+	go func() {
+		select {
+		case <-ch:
+			session.Close()
+			log.Println("[ERROR] wssh disconnected")
+		}
+	}()
+
+	// read from terminal and write to frontend.
+	go func() {
+		for {
+			err := w.Send(ws, reader)
+			if err != nil {
+				if err == io.EOF {
+					ch <- struct{}{}
+					return
+				}
+				log.Println("[ERROR] websocket message send:", err)
+			}
+		}
+	}()
+
+	// read from frontend and write to terminal.
+	go func() {
+		for {
+			err := w.Receive(ws, session, writer)
+			if err != nil {
+				if err == io.EOF || errors.Is(err, net.ErrClosed) {
+					ch <- struct{}{}
+					return
+				} else {
+					log.Println("[ERROR] websocket message receive:", err)
+				}
+			}
+		}
+	}()
+
+	err := session.Shell()
+	if err != nil {
+		log.Println("[ERROR] session shell: ", err)
+		return
+	}
+
+	err = session.Wait()
+	if err != nil {
+		log.Println("[ERROR] session wait: ", err)
+		return
+	}
 }
