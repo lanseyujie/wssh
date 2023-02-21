@@ -218,10 +218,10 @@ func (w *WebSocketShell) WebSocket(ws *websocket.Conn) {
 		defer writer.Close()
 	}
 
-	ch := make(chan struct{})
+	stopCh := make(chan struct{})
 	go func() {
 		select {
-		case <-ch:
+		case <-stopCh:
 			session.Close()
 			log.Println("[ERROR] wssh disconnected")
 		}
@@ -230,10 +230,22 @@ func (w *WebSocketShell) WebSocket(ws *websocket.Conn) {
 	// read from terminal and write to frontend.
 	go func() {
 		for {
+			select {
+			case <-stopCh:
+				return
+			default:
+			}
+
 			err := w.Send(ws, reader)
 			if err != nil {
 				if err == io.EOF {
-					ch <- struct{}{}
+					select {
+					case <-stopCh:
+						return
+					default:
+						close(stopCh)
+					}
+
 					return
 				}
 				log.Println("[ERROR] websocket message send:", err)
@@ -244,10 +256,22 @@ func (w *WebSocketShell) WebSocket(ws *websocket.Conn) {
 	// read from frontend and write to terminal.
 	go func() {
 		for {
+			select {
+			case <-stopCh:
+				return
+			default:
+			}
+
 			err := w.Receive(ws, session, writer)
 			if err != nil {
 				if err == io.EOF || errors.Is(err, net.ErrClosed) {
-					ch <- struct{}{}
+					select {
+					case <-stopCh:
+						return
+					default:
+						close(stopCh)
+					}
+
 					return
 				} else {
 					log.Println("[ERROR] websocket message receive:", err)
