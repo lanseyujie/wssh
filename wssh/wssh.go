@@ -159,7 +159,7 @@ func (w *WebSocketShell) Receive(ws *websocket.Conn, session *ssh.Session, write
 		err = session.WindowChange(resize.Rows, resize.Cols)
 	case HEARTBEAT:
 		if string(buf[1:]) == "ping" {
-			err = websocket.Message.Send(ws, []byte{2, 'p', 'o', 'n', 'g'})
+			err = websocket.Message.Send(ws, []byte{byte(HEARTBEAT), 'p', 'o', 'n', 'g'})
 		}
 	default:
 		err = errors.New("[ERROR] unexpected msg type")
