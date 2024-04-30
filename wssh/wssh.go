@@ -115,7 +115,7 @@ func requestPty(sess *ssh.Session, cols, rows int) error {
 	return err
 }
 
-func (w *WebSocketShell) Send(ws *websocket.Conn, reader io.Reader) (err error) {
+func (w *WebSocketShell) Send(ws *websocket.Conn, reader io.Reader) error {
 	buf := w.pool.Get().([]byte)
 	defer func() {
 		buf = buf[:0]
@@ -124,14 +124,14 @@ func (w *WebSocketShell) Send(ws *websocket.Conn, reader io.Reader) (err error) 
 
 	buf = make([]byte, cap(buf))
 	buf[0] = byte(SESSION)
-	_, err = reader.Read(buf[1:])
+	n, err := reader.Read(buf[1:])
 	if err != nil {
-		return
+		return err
 	}
 
-	err = websocket.Message.Send(ws, buf)
+	err = websocket.Message.Send(ws, buf[:n+1])
 
-	return
+	return err
 }
 
 func (w *WebSocketShell) Receive(ws *websocket.Conn, session *ssh.Session, writer io.WriteCloser) (err error) {
